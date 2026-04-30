@@ -1,21 +1,29 @@
 "use client";
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation"; // <-- Imported here
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Edit2, Trash2, ExternalLink, ArrowLeft, Loader2, Image as ImageIcon, AlertTriangle } from "lucide-react";
+import { Plus, Edit2, Trash2, ExternalLink, ArrowLeft, Loader2, Image as ImageIcon, AlertTriangle, LogOut } from "lucide-react";
 
-// --- TRANSLATORS & EXTRACTORS ---
-const resolveWixImage = (url) => {
-  if (!url) return null;
-  // If Wix gives us a normal web link (like in your JSON payload), just use it directly!
-  if (url.startsWith("http")) return url; 
-  
-  // If they give us a weird Wix link, translate it
-  const match = url.match(/wix:image:\/\/v1\/([^\/]+)/);
-  if (match && match[1]) {
-    const cleanHash = match[1].split('#')[0];
-    return `https://static.wixstatic.com/media/${cleanHash}`;
+// --- WIX API TRANSLATORS & EXTRACTORS (These stay OUTSIDE the component) ---
+const getCoverImage = (blog) => {
+  if (!blog) return null;
+  const img = blog.coverMedia?.image || blog.media?.wixMedia?.image || blog.media?.image;
+  if (!img) return null;
+
+  if (img.url && img.url.startsWith("http")) return img.url;
+
+  if (img.url && img.url.startsWith("wix:image")) {
+    const match = img.url.match(/wix:image:\/\/v1\/([^\/]+)/);
+    if (match && match[1]) {
+      return `https://static.wixstatic.com/media/${match[1].split('#')[0]}`;
+    }
   }
-  return url;
+
+  if (img.id) {
+    return `https://static.wixstatic.com/media/${img.id}`;
+  }
+
+  return null;
 };
 
 const extractTextFromRichContent = (richContent) => {
@@ -34,11 +42,14 @@ const extractTextFromRichContent = (richContent) => {
 };
 
 export default function Dashboard() {
+  // --- THE FIX: useRouter MUST be inside the component! ---
+  const router = useRouter(); 
+  
   const [blogs, setBlogs] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [view, setView] = useState("list"); 
   
-  const [formData, setFormData] = useState({ id: "", title: "", content: "", imageUrl: "" });
+  const [formData, setFormData] = useState({ id: "", title: "", content: "", imageUrl: "", imageId: "" });
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -50,6 +61,12 @@ export default function Dashboard() {
   useEffect(() => {
     fetchBlogs();
   }, []);
+
+  // --- LOGOUT FUNCTION ---
+  const handleLogout = async () => {
+    await fetch('/api/auth', { method: 'DELETE' });
+    window.location.href = "/login"; // Force a clean redirect to clear cache
+  };
 
   const fetchBlogs = async () => {
     setIsLoading(true);
@@ -96,18 +113,16 @@ export default function Dashboard() {
       const fullBlog = data.post || data; 
 
       if (fullBlog) {
-        // Fallback chain: Check richContent -> plainContent -> excerpt
         const actualContent = extractTextFromRichContent(fullBlog.richContent) || fullBlog.plainContent || fullBlog.excerpt || "";
-        
-        // Check all the places Wix hides the image URL
-        const rawImageUrl = fullBlog.coverMedia?.image?.url || fullBlog.media?.wixMedia?.image?.url || fullBlog.media?.image?.url;
-        const actualImage = resolveWixImage(rawImageUrl);
+        const actualImage = getCoverImage(fullBlog);
+        const rawId = fullBlog.coverMedia?.image?.id || fullBlog.media?.wixMedia?.image?.id || fullBlog.media?.image?.id || "";
 
         setFormData({
           id: fullBlog.id || fullBlog._id, 
           title: fullBlog.title,
           content: actualContent,
-          imageUrl: actualImage || ""
+          imageUrl: actualImage || "",
+          imageId: rawId 
         });
         
         setImagePreview(actualImage || "");
@@ -123,7 +138,7 @@ export default function Dashboard() {
   };
 
   const handleCreateNew = () => {
-    setFormData({ id: "", title: "", content: "", imageUrl: "" });
+    setFormData({ id: "", title: "", content: "", imageUrl: "", imageId: "" });
     setImagePreview("");
     setImageFile(null);
     setView("form");
@@ -141,10 +156,54 @@ export default function Dashboard() {
     e.preventDefault();
     setIsSaving(true);
 
+    let finalImageUrl = formData.imageUrl; 
+    let finalImageId = formData.imageId;
+
+    if (imageFile) {
+      const uploadData = new FormData();
+      uploadData.append("image", imageFile);
+
+      try {
+        const imgRes = await fetch('/api/upload', {
+          method: "POST",
+          body: uploadData
+        });
+        
+        const imgJson = await imgRes.json();
+
+        if (imgJson.success) {
+          finalImageUrl = imgJson.url; 
+          finalImageId = imgJson.id; 
+        } else {
+          alert("Wix Media Upload failed: " + (imgJson.error || "Unknown error"));
+          setIsSaving(false);
+          return;
+        }
+      } catch (error) {
+        alert("Error connecting to upload server.");
+        setIsSaving(false);
+        return;
+      }
+    }
+
+    let fallbackId = finalImageId;
+    if (!fallbackId && finalImageUrl && finalImageUrl.startsWith("wix:image")) {
+       const match = finalImageUrl.match(/wix:image:\/\/v1\/([^\/]+)/);
+       if (match) fallbackId = match[1].split('/')[0];
+    }
+
+    const imagePayload = finalImageUrl ? {
+        image: {
+            url: finalImageUrl,
+            id: fallbackId || undefined
+        }
+    } : undefined;
+
     const payload = {
       post: {
         title: formData.title,
-        coverMedia: formData.imageUrl ? { image: { url: formData.imageUrl } } : undefined,
+        coverMedia: imagePayload,
+        media: imagePayload ? { custom: false, displayed: true, wixMedia: imagePayload } : undefined,
         richContent: {
           nodes: [{ type: "PARAGRAPH", id: "p1", nodes: [{ type: "TEXT", id: "t1", textData: { text: formData.content } }] }]
         }
@@ -169,7 +228,7 @@ export default function Dashboard() {
          alert("Failed to save: " + (err.error || "Unknown error"));
       }
     } catch (error) {
-      alert("Failed to connect to server.");
+      alert("Failed to connect to Wix server.");
     }
     setIsSaving(false);
   };
@@ -184,9 +243,14 @@ export default function Dashboard() {
             <p className="text-slate-500 mt-1">Manage publications securely</p>
           </div>
           {view === "list" && (
-            <button onClick={handleCreateNew} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg font-medium transition-colors shadow-sm shadow-indigo-200">
-              <Plus size={18} /> New Blog
-            </button>
+            <div className="flex items-center gap-4">
+              <button onClick={handleLogout} className="flex items-center text-slate-500 hover:text-rose-600 font-medium transition-colors text-sm">
+                <LogOut size={16} className="mr-1.5" /> Log Out
+              </button>
+              <button onClick={handleCreateNew} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg font-medium transition-colors shadow-sm shadow-indigo-200">
+                <Plus size={18} /> New Blog
+              </button>
+            </div>
           )}
         </header>
 
@@ -205,9 +269,7 @@ export default function Dashboard() {
               ) : (
                 <div className="grid gap-6">
                   {blogs.map((blog) => {
-                    // FIX: Checking 'media' instead of just 'coverMedia' based on your JSON
-                    const rawImageUrl = blog.coverMedia?.image?.url || blog.media?.wixMedia?.image?.url || blog.media?.image?.url;
-                    const coverImage = resolveWixImage(rawImageUrl); 
+                    const coverImage = getCoverImage(blog); 
                     
                     return (
                       <div key={blog.id || Math.random()} className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow flex flex-col md:flex-row overflow-hidden group">
@@ -222,7 +284,6 @@ export default function Dashboard() {
                           <div>
                             <h3 className="text-xl font-semibold mb-2 group-hover:text-indigo-600 transition-colors">{blog.title}</h3>
                             <p className="text-slate-500 line-clamp-2 text-sm leading-relaxed">
-                              {/* FIX: Added blog.excerpt as a fallback so the cards aren't blank */}
                               {extractTextFromRichContent(blog.richContent) || blog.plainContent || blog.excerpt || "No content available."}
                             </p>
                           </div>
@@ -251,7 +312,7 @@ export default function Dashboard() {
             </motion.div>
           ) : (
             <motion.div key="form" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8">
-              <button onClick={() => setView("list")} className="flex items-center text-sm font-medium text-slate-500 hover:text-slate-900 mb-8 transition-colors">
+              <button type="button" onClick={() => setView("list")} className="flex items-center text-sm font-medium text-slate-500 hover:text-slate-900 mb-8 transition-colors">
                 <ArrowLeft size={16} className="mr-2" /> Back to list
               </button>
               
@@ -279,7 +340,7 @@ export default function Dashboard() {
                 
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wide">Or use existing Image URL</label>
-                  <input type="text" value={formData.imageUrl} onChange={(e) => { setFormData({...formData, imageUrl: e.target.value}); setImagePreview(e.target.value); }} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-600 focus:border-transparent outline-none text-sm" placeholder="https://..." />
+                  <input type="text" value={formData.imageUrl} onChange={(e) => { setFormData({...formData, imageUrl: e.target.value, imageId: ""}); setImagePreview(e.target.value); }} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-600 focus:border-transparent outline-none text-sm" placeholder="https://..." />
                 </div>
 
                 <div>
