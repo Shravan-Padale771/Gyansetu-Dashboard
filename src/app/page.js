@@ -292,7 +292,13 @@ export default function Dashboard() {
                               {new Date(blog.firstPublishedDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                             </p>
                             <div className="flex items-center gap-2">
-                              <a href={blog.url} target="_blank" rel="noreferrer" className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors">
+                              <a 
+                                href={blog.url || `https://gyansetu.earc.jnanaprabodhini.org/post/${blog.slug}`} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                title="View live post"
+                              >
                                 <ExternalLink size={18} />
                               </a>
                               <button onClick={() => setEditModal({ isOpen: true, blogId: blog.id, confirmText: "" })} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors">
