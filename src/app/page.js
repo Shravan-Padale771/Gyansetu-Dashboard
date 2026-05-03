@@ -111,31 +111,37 @@ export default function Dashboard() {
   }, [currentUser]);
 
   // --- LOGIN HANDLER ---
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     const cleanName = usernameInput.trim().toLowerCase();
     
     if (!cleanName || !passwordInput) return alert("Please enter a username and password.");
 
-    const adminPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
-    const editorPassword = process.env.NEXT_PUBLIC_EDITOR_PASSWORD;
+    try {
+      // Send the credentials to our secure backend
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: cleanName, password: passwordInput })
+      });
 
-    if (cleanName === "gyansetu" && passwordInput === adminPassword) {
-      setUserRole("admin");
-      setCurrentUser("GyanSetu");
-      localStorage.setItem("dashUser", "GyanSetu");
-      localStorage.setItem("dashRole", "admin");
-    } 
-    else if (cleanName !== "gyansetu" && passwordInput === editorPassword) {
-      setUserRole("editor");
-      setActiveTab("newsletters"); 
-      setCurrentUser(cleanName);
-      localStorage.setItem("dashUser", cleanName);
-      localStorage.setItem("dashRole", "editor");
-    } 
-    else {
-      alert("Invalid username or password.");
-      return;
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        // Success! The server approved us.
+        setUserRole(data.role);
+        setCurrentUser(data.user);
+        if (data.role === "editor") setActiveTab("newsletters");
+        
+        // Save the session
+        localStorage.setItem("dashUser", data.user);
+        localStorage.setItem("dashRole", data.role);
+      } else {
+        // Server rejected the password
+        alert(data.error || "Invalid username or password.");
+      }
+    } catch (err) {
+      alert("Failed to connect to authentication server.");
     }
   };
 
